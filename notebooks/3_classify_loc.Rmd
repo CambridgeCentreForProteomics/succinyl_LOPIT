@@ -1,0 +1,486 @@
+---
+title: "Classify major localisation"
+author:
+  - name: "Tom Smith"
+    affiliation: "Cambridge Centre for Proteomics"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+abstract: | 
+  Here we classify proteins/peptides according to their marker profiles in the
+  unenriched/unmodified LOPIT, using SVM
+output:
+  pdf_document:
+  html_notebook: default
+geometry: margin=1in
+fontsize: 11pt
+---
+
+
+
+```{r}
+library(MSnbase)
+library(pRoloc)
+library(pRolocExt)
+library(camprotR)
+library(tidyverse)
+
+
+marker_colours <- getStockcol()[c(1:5, 7:11)]
+```
+
+```{r}
+unmod_prot <- readRDS("../results/unmod_prot.rds")
+unmod_pep <- readRDS("../results/unmod_pep.rds")
+succ_pep <- readRDS("../results/succ_pep.rds")
+
+```
+
+
+
+
+SVM parameter optimisation. Not run by default to avoid excessive run-time.
+
+We are using just the unmodified peptides here although we could use the concatenated datasets we create below since all markers for the modified peptides are set to 'unknown'.
+```{r, eval=FALSE}
+times <- 50
+sigma <- 2^(-5:0)
+cost <- 2^(-2:4)
+
+# less onerous for quicker check
+#times <- 10
+#sigma <- 2^(-4:-1)
+#cost <- 2^(0:3)
+
+params_unmod_prot <- pRoloc::svmOptimisation(
+  unmod_prot,
+  fcol="markers",
+  times=times,
+  cost=cost,
+  sigma=sigma)
+
+
+
+
+saveRDS(params_unmod_prot, "../results/svm_params_unmod_prot.Rds")
+
+plot(params_unmod_prot)
+levelPlot(params_unmod_prot)
+getParams(params_unmod_prot)
+
+
+```
+
+For the optimisation of peptide-level SVM parameters, we will use the protein-level optimal parameters as a start point and vary 2-fold in either direction. We will also limit to 30 iterations. This is to limit the run-time of the optimisation.
+```{r, eval=FALSE}
+
+times <- 30
+sigma <- 2^(-5:-3)
+cost <- 2^(2:4)
+
+params_unmod_pep <- pRoloc::svmOptimisation(
+  unmod_pep,
+  fcol="markers",
+  times=times,
+  cost=cost,
+  sigma=sigma)
+
+saveRDS(params_unmod_pep, "../results/svm_params_unmod_pep.Rds")
+```
+
+
+Read in previous SVM parameter optimisation
+```{r}
+params_unmod_prot <- readRDS("../results/svm_params_unmod_prot.Rds")
+params_unmod_pep <- readRDS("../results/svm_params_unmod_pep.Rds")
+
+```
+
+Now let's inspect the marker set level F1 scores
+```{r}
+svm_params <- NULL
+svm_params$prot <- params_unmod_prot
+svm_params$pep <- params_unmod_pep
+
+
+svm_params %>% names() %>% lapply(function(condition){
+    data.frame(getF1Scores(svm_params[[condition]])) %>%
+      mutate(condition=condition)
+  }) %>% do.call(what='rbind') %>%
+      ggplot(aes(condition, F1)) +
+    geom_boxplot(notch=TRUE) +
+    theme_camprot() +
+    ylim(0.7, 1) +
+    xlab('') +
+    ylab('Macro F1') +
+  scale_colour_manual(values=get_cat_palette(3), name='')
+```
+
+OK, so very little difference. Protein macro F1 is higher as we might expect but not a huge difference
+
+What about the organelle level F1
+```{r}
+
+organalle_f1 <- svm_params %>% names() %>% lapply(function(condition){
+  
+  params <- svm_params[[condition]]
+  
+  f1scoreperO <- matrix(0, times, dim(params@cmMatrices[[1]])[1])
+  
+  for(i in 1:times){
+    
+    conf <- params@cmMatrices[[i]]
+    
+    f1perO <- MLInterfaces::F1(conf, naAs0 = TRUE)
+    
+    f1scoreperO[i, ] <- f1perO
+  }
+  
+  OrganelleF1 <- as.data.frame(f1scoreperO)
+  print(dim)
+  colnames(OrganelleF1) <- getMarkerClasses(unmod_pep)
+  
+  OrganelleF1 %>% mutate(condition=condition) 
+}) %>% do.call(what='rbind')
+
+
+organalle_f1 %>% pivot_longer(-condition, names_to='marker_set', values_to='F1') %>%
+  ggplot(aes(marker_set, F1, colour=condition)) +
+  geom_boxplot(position='dodge', notch=TRUE) +
+  theme_camprot(base_size=12) +
+  scale_colour_manual(values=get_cat_palette(4)[3:4], name='') +
+  theme(strip.text=element_text(size=8), axis.text.x=element_text(angle=45, hjust=1, vjust=1), aspect.ratio=0.2) +
+  xlab('')
+```  
+
+Similar story. In fact, nucleus F1 is sometimes better with peptide!
+
+
+
+
+Combine modified and unmodified peptides so we can use the markers from the unmodified LOPIT and the optimised SVM parameters for these markers to classify all peptides together.
+```{r}
+combineLOPITs <- function(lopit1, lopit2){
+  
+  tmp_exprs <- rbind(exprs(lopit1), exprs(lopit2))
+  
+  tmp_fData1 <- fData(lopit1)
+  tmp_fData2 <- fData(lopit2)
+  
+  for(col in setdiff(colnames(tmp_fData2), colnames(tmp_fData1))){
+    tmp_fData1[[col]] <- NA
+  }
+  
+  for(col in setdiff(colnames(tmp_fData1), colnames(tmp_fData2))){
+    tmp_fData2[[col]] <- NA
+  }
+  
+  tmp_fData <- rbind(tmp_fData1, tmp_fData2)
+  
+  mod_prot_plus_mod_pep <- MSnSet(tmp_exprs, tmp_fData, pData(lopit1))
+  
+  invisible(mod_prot_plus_mod_pep)
+}
+
+combineUnmodProtModPep <- function(unmod_prot, mod_pep, mod_to_unknown=FALSE){
+  
+  combined_data <- combineLOPITs(unmod_prot, mod_pep)
+  fData(combined_data)$mod <- c(rep("Unmodified", length(rownames(unmod_prot))),
+                                rep("Modified", length(rownames(mod_pep))))
+  
+  for(col in fvarLabels(combined_data)[grep("^CV", fvarLabels(combined_data))])
+    
+    if(mod_to_unknown){
+      # reset the marker column to unknown so that all modified features can be classified  
+      fData(combined_data)$markers[fData(combined_data)$mod=="Modified"] <- "unknown"
+    }
+  
+  invisible(combined_data)
+}
+
+unmod_pep_succ_pep <- combineUnmodProtModPep(unmod_pep, succ_pep, mod_to_unknown=TRUE)
+
+
+# Just checking the concatenated dataset is the right dimensions
+dim(unmod_pep_succ_pep)
+dim(unmod_pep)
+dim(succ_pep)
+```
+Crude function to filter SVM classifications by a quantile threshold.
+```{r}
+addFilteredSVM <- function(obj, quant_thresh=0.75){
+  fData(obj)$max.svm <- apply(fData(obj)$svm.all.scores, MARGIN=1, FUN=max)
+  
+  obj_no_markers <- obj[fData(obj)$markers=="unknown",]
+
+  svm_individual_threshold <- fData(obj_no_markers) %>%
+    group_by(svm) %>%
+    summarise(threshold=quantile(max.svm, quant_thresh))
+    
+  p <- fData(obj_no_markers) %>%
+    data.frame() %>%
+    ggplot() +
+    geom_boxplot(aes(svm, max.svm)) +
+    theme_camprot() +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1, size=10))
+  
+  print(p)
+  
+  print(svm_individual_threshold)
+  svm_individual_threshold_list <- svm_individual_threshold$threshold
+  names(svm_individual_threshold_list) <- svm_individual_threshold$svm
+  
+  fData(obj) <- fData(obj) %>%
+    tibble::rownames_to_column() %>%
+    rowwise() %>%
+    mutate("svm_filtered_ind_thresh"=ifelse(max.svm<svm_individual_threshold_list[[svm]], "unknown", as.character(svm))) %>%
+    tibble::column_to_rownames()
+  
+  print(table(fData(obj)$svm_filtered_ind_thresh))
+  print(fData(obj) %>% filter(markers=="unknown") %>%
+          pull(svm_filtered_ind_thresh) %>% table())
+  
+  fData(obj)$svm_filtered_single_threshold <- as.character(fData(obj)$svm)
+  low_confidence <- apply(fData(obj)$svm.all.scores, MARGIN=1, FUN=max)<0.9
+  fData(obj)$svm_filtered_single_threshold[low_confidence] <- "unknown"
+  
+  print(table(fData(obj)$svm_filtered_single_threshold))
+  print(fData(obj) %>% filter(markers=="unknown") %>%
+          pull(svm_filtered_single_threshold) %>% table())
+  
+  invisible(obj)
+}
+
+
+```
+
+Classify peptides using SVM
+```{r}
+
+best_params <- getParams(params_unmod_pep)
+
+pep_classifications <- svmClassification(
+    unmod_pep_succ_pep, scores="all", cost=best_params[['cost']],
+    sigma=best_params[['sigma']], fcol="markers")
+
+
+pep_classifications <- pep_classifications %>% addFilteredSVM()
+
+
+saveRDS(pep_classifications, '../results/pep_classifications.rds')
+```
+
+
+
+
+Let's make some alluvial plots to visualise the SVM assignments, even if we need to take these with a pinch(pile) of salt!
+```{r}
+library(ggalluvial)
+
+plotPTMAlluvial <- function(pep_classifications,
+                            classification_column="svm_filtered_ind_thresh", remove_unknown=TRUE){
+  
+mod_seqs <- fData(pep_classifications) %>% filter(mod=="Modified") %>% pull(Sequence) %>% unique()
+print(length(mod_seqs))
+
+classifications <- fData(pep_classifications) %>% filter(Sequence %in% mod_seqs) %>%
+  dplyr::select(mod, Sequence, classification_column)
+
+mod_classifications <- classifications %>% filter(mod=="Modified")  
+mod_classifications$mod_class <- mod_classifications[[classification_column]]
+
+umod_classifications <- classifications %>% filter(mod=="Unmodified")
+umod_classifications$umod_class <- umod_classifications[[classification_column]]
+
+combined_classifications <- mod_classifications[,c("Sequence", "mod_class")] %>% 
+  merge(umod_classifications[,c("Sequence", "umod_class")], by="Sequence")
+
+if(remove_unknown){
+  combined_classifications <- combined_classifications[
+    (combined_classifications[["mod_class"]]!="unknown" & combined_classifications[["umod_class"]]!="unknown"),]
+}
+
+.bardata <- combined_classifications %>%
+  dplyr::select(axis1=umod_class, axis2=mod_class) %>%
+  gather(key="type", value="class") %>%
+  group_by(type, class) %>% count()
+
+.bardata$class <- droplevels(factor(.bardata$class, levels=organelle_order))
+m_colours <- getColours(levels(.bardata$class))
+
+combined_classifications$mod_class <- droplevels(factor(combined_classifications$mod_class, levels=levels(.bardata$class)))
+combined_classifications$umod_class <- droplevels(factor(combined_classifications$umod_class, levels=levels(.bardata$class)))
+
+combined_classifications$mod_class <- factor(combined_classifications$mod_class, levels=levels(.bardata$class))
+combined_classifications$umod_class <- factor(combined_classifications$umod_class, levels=levels(.bardata$class))
+
+p <- combined_classifications %>%
+  ggplot() +
+  #scale_colour_manual(values=getColours(unique(combined_classifications$mod_class)), guide=FALSE) +
+  #geom_stratum(width=0.1) +
+  my_theme +
+  geom_alluvium(aes(axis1=umod_class, axis2=mod_class, fill=mod_class), width=0, fill_by = 'first_variable' ) +
+  geom_bar(data=.bardata, aes(type, n, fill=class), stat="identity", width=0.05) + #, colour="black") +
+  scale_fill_manual(values=m_colours, name="") +
+  theme(aspect.ratio=0.5, axis.line=element_blank(), axis.text.x=element_blank(), axis.ticks=element_blank()) +
+  coord_flip() + xlab("") + ylab("") +
+  scale_x_discrete(labels=c("PTM","Unmodified"))
+
+print(p)
+
+invisible(p)
+}
+
+
+
+
+```
+
+```{r}
+classifications <- pep_classifications %>% names() %>% lapply(function(x){
+    pep_classifications[[x]] %>%
+    fData() %>%
+    filter((mod=="Unmodified") | (mod=="Modified" & filtered_ptm!="" & ptm_position!="")) %>%
+    #filter(svm_filtered_ind_thresh!="unknown") %>%
+    mutate(name=x) %>%
+    select(Master.Protein.Accessions, mod, ptm_position,
+           svm_filtered_ind_thresh, name, Sequence)
+  })
+
+same_localisation <- do.call("rbind", classifications) %>%
+  group_by(Master.Protein.Accessions, mod, ptm_position,
+           svm_filtered_ind_thresh, Sequence) %>%
+  tally() %>% filter(n==3)
+
+same_localisation_unmod <- same_localisation %>% filter(mod=="Unmodified")
+print(length(unique(same_localisation_unmod$Sequence)))
+same_localisation_mod <- same_localisation %>% filter(mod=="Modified") 
+print(length(unique(same_localisation_mod$Sequence)))
+same_localisation_both <- same_localisation %>%
+  filter(Sequence %in% same_localisation_unmod$Sequence,
+         Sequence %in% same_localisation_mod$Sequence)
+print(length(unique(same_localisation_mod$Sequence)))
+```
+```{r}
+pep_classifications$total_1[
+  fData(pep_classifications$total_1)$Sequence %in%
+    same_localisation_both$Sequence]
+  
+p <- plotPTMAlluvial(pep_classifications$total_1[
+  fData(pep_classifications$total_1)$Sequence %in%
+    same_localisation_both$Sequence], remove_unknown=FALSE)
+```
+
+
+```{r, fig.width=10}
+p <- plotPTMAlluvial(pep_classifications$total_1)
+p <- plotPTMAlluvial(pep_classifications$total_2)
+p <- plotPTMAlluvial(pep_classifications$total_3)
+
+p <- plotPTMAlluvial(pep_classifications$total_1, remove_unknown=FALSE)
+p <- plotPTMAlluvial(pep_classifications$total_2, remove_unknown=FALSE)
+p <- plotPTMAlluvial(pep_classifications$total_3, remove_unknown=FALSE)
+
+```
+
+```{r}
+.class_table <- pep_classifications %>% names() %>% lapply(function(x){
+  fData(pep_classifications[[x]]) %>%
+  select(svm_filtered_ind_thresh, svm, mod) %>%
+    mutate(name=x)
+}) %>% do.call(what="rbind") %>%
+  separate(name, into=c("_", "replicate"), sep="_")
+
+.class_table$mod <- factor(
+  .class_table$mod, levels=c("Unmodified", "Modified"))
+
+.class_table$svm_filtered_ind_thresh <- factor(
+  .class_table$svm_filtered_ind_thresh, levels=organelle_order)
+
+.class_table$svm <- factor(
+  .class_table$svm, levels=organelle_order)
+
+.class_tablulate_svm <- .class_table %>%
+  group_by(svm, mod, replicate) %>%
+  tally()
+
+.class_tablulate_svm_filtered <- .class_table %>%
+  group_by(svm_filtered_ind_thresh, mod, replicate) %>%
+  tally()
+
+p <- .class_tablulate_svm_filtered %>%
+  ggplot(aes(mod, n, fill=svm_filtered_ind_thresh)) +
+  geom_bar(stat="identity", position="fill") +
+  my_theme +
+  facet_wrap(~replicate) +
+  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), name="") +
+  theme(text=element_text(size=10),
+        axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab("") + ylab("Fraction")
+
+p2 <- p %+% .class_tablulate_svm_filtered[
+  .class_tablulate_svm_filtered$svm_filtered_ind_thresh!="unknown",]
+
+
+p3 <- p %+% .class_tablulate_svm + aes(fill=svm)
+
+p4 <- .class_tablulate_svm_filtered %>%
+  ggplot(aes(mod, n, fill=svm_filtered_ind_thresh)) +
+  geom_bar(stat="identity") +
+  my_theme +
+  facet_wrap(mod~replicate, scales="free") +
+  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), name="") +
+  theme(text=element_text(size=10),
+        axis.text.x=element_blank()) +
+  xlab("") + ylab("Fraction")
+
+p5 <- p4 %+% .class_tablulate_svm_filtered[
+  .class_tablulate_svm_filtered$svm_filtered_ind_thresh!="unknown",]
+
+
+p6 <- p4 %+% .class_tablulate_svm + aes(fill=svm)
+
+print(p)
+print(p2)
+print(p3)
+
+print(p4)
+print(p5)
+print(p6)
+```
+
+
+```{r, fig.width=10, fig.height=10}
+p <- .class_tablulate_svm %>% group_by(replicate, mod) %>%
+  mutate("fraction"=n/sum(n)) %>%
+  ggplot(aes(mod, fraction, fill=svm)) +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), guide=FALSE) +
+  my_theme +
+  facet_grid(svm~replicate, scales="free") +
+  theme(text=element_text(size=15),
+        axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab("") + ylab("Fraction")
+
+p2 <- .class_tablulate_svm_filtered %>% group_by(replicate, mod) %>%
+  mutate("fraction"=n/sum(n)) %>%
+  ggplot(aes(mod, fraction, fill=svm_filtered_ind_thresh)) +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), guide=FALSE) +
+  my_theme +
+  facet_grid(svm_filtered_ind_thresh~replicate, scales="free") +
+  theme(text=element_text(size=15),
+        axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
+  xlab("") + ylab("Fraction")
+
+print(p)
+print(p2)
+```
+
+
+
+
+
+Save out the combined dataset for Olly
+```{r}
+saveRDS(unmod_pep_succ_pep, '../results/unmod_pep_succ_pep_comb.rds')
+```
+
