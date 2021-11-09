@@ -39,9 +39,17 @@ succ_pep <- readRDS("../results/succ_pep.rds")
 
 SVM parameter optimisation. Not run by default to avoid excessive run-time.
 
+
+```{r}
+times <- NULL
+times$prot <- 50
+times$pep <- 30
+
+```
+
 We are using just the unmodified peptides here although we could use the concatenated datasets we create below since all markers for the modified peptides are set to 'unknown'.
 ```{r, eval=FALSE}
-times <- 50
+
 sigma <- 2^(-5:0)
 cost <- 2^(-2:4)
 
@@ -53,7 +61,7 @@ cost <- 2^(-2:4)
 params_unmod_prot <- pRoloc::svmOptimisation(
   unmod_prot,
   fcol="markers",
-  times=times,
+  times=times$prot,
   cost=cost,
   sigma=sigma)
 
@@ -72,14 +80,13 @@ getParams(params_unmod_prot)
 For the optimisation of peptide-level SVM parameters, we will use the protein-level optimal parameters as a start point and vary 2-fold in either direction. We will also limit to 30 iterations. This is to limit the run-time of the optimisation.
 ```{r, eval=FALSE}
 
-times <- 30
 sigma <- 2^(-5:-3)
 cost <- 2^(2:4)
 
 params_unmod_pep <- pRoloc::svmOptimisation(
   unmod_pep,
   fcol="markers",
-  times=times,
+  times=times$pep,
   cost=cost,
   sigma=sigma)
 
@@ -123,9 +130,9 @@ organalle_f1 <- svm_params %>% names() %>% lapply(function(condition){
   
   params <- svm_params[[condition]]
   
-  f1scoreperO <- matrix(0, times, dim(params@cmMatrices[[1]])[1])
+  f1scoreperO <- matrix(0, times[[condition]], dim(params@cmMatrices[[1]])[1])
   
-  for(i in 1:times){
+  for(i in 1:times[[condition]]){
     
     conf <- params@cmMatrices[[i]]
     
@@ -135,7 +142,6 @@ organalle_f1 <- svm_params %>% names() %>% lapply(function(condition){
   }
   
   OrganelleF1 <- as.data.frame(f1scoreperO)
-  print(dim)
   colnames(OrganelleF1) <- getMarkerClasses(unmod_pep)
   
   OrganelleF1 %>% mutate(condition=condition) 
@@ -152,8 +158,6 @@ organalle_f1 %>% pivot_longer(-condition, names_to='marker_set', values_to='F1')
 ```  
 
 Similar story. In fact, nucleus F1 is sometimes better with peptide!
-
-
 
 
 Combine modified and unmodified peptides so we can use the markers from the unmodified LOPIT and the optimised SVM parameters for these markers to classify all peptides together.
@@ -268,219 +272,4 @@ pep_classifications <- pep_classifications %>% addFilteredSVM()
 saveRDS(pep_classifications, '../results/pep_classifications.rds')
 ```
 
-
-
-
-Let's make some alluvial plots to visualise the SVM assignments, even if we need to take these with a pinch(pile) of salt!
-```{r}
-library(ggalluvial)
-
-plotPTMAlluvial <- function(pep_classifications,
-                            classification_column="svm_filtered_ind_thresh", remove_unknown=TRUE){
-  
-mod_seqs <- fData(pep_classifications) %>% filter(mod=="Modified") %>% pull(Sequence) %>% unique()
-print(length(mod_seqs))
-
-classifications <- fData(pep_classifications) %>% filter(Sequence %in% mod_seqs) %>%
-  dplyr::select(mod, Sequence, classification_column)
-
-mod_classifications <- classifications %>% filter(mod=="Modified")  
-mod_classifications$mod_class <- mod_classifications[[classification_column]]
-
-umod_classifications <- classifications %>% filter(mod=="Unmodified")
-umod_classifications$umod_class <- umod_classifications[[classification_column]]
-
-combined_classifications <- mod_classifications[,c("Sequence", "mod_class")] %>% 
-  merge(umod_classifications[,c("Sequence", "umod_class")], by="Sequence")
-
-if(remove_unknown){
-  combined_classifications <- combined_classifications[
-    (combined_classifications[["mod_class"]]!="unknown" & combined_classifications[["umod_class"]]!="unknown"),]
-}
-
-.bardata <- combined_classifications %>%
-  dplyr::select(axis1=umod_class, axis2=mod_class) %>%
-  gather(key="type", value="class") %>%
-  group_by(type, class) %>% count()
-
-.bardata$class <- droplevels(factor(.bardata$class, levels=organelle_order))
-m_colours <- getColours(levels(.bardata$class))
-
-combined_classifications$mod_class <- droplevels(factor(combined_classifications$mod_class, levels=levels(.bardata$class)))
-combined_classifications$umod_class <- droplevels(factor(combined_classifications$umod_class, levels=levels(.bardata$class)))
-
-combined_classifications$mod_class <- factor(combined_classifications$mod_class, levels=levels(.bardata$class))
-combined_classifications$umod_class <- factor(combined_classifications$umod_class, levels=levels(.bardata$class))
-
-p <- combined_classifications %>%
-  ggplot() +
-  #scale_colour_manual(values=getColours(unique(combined_classifications$mod_class)), guide=FALSE) +
-  #geom_stratum(width=0.1) +
-  my_theme +
-  geom_alluvium(aes(axis1=umod_class, axis2=mod_class, fill=mod_class), width=0, fill_by = 'first_variable' ) +
-  geom_bar(data=.bardata, aes(type, n, fill=class), stat="identity", width=0.05) + #, colour="black") +
-  scale_fill_manual(values=m_colours, name="") +
-  theme(aspect.ratio=0.5, axis.line=element_blank(), axis.text.x=element_blank(), axis.ticks=element_blank()) +
-  coord_flip() + xlab("") + ylab("") +
-  scale_x_discrete(labels=c("PTM","Unmodified"))
-
-print(p)
-
-invisible(p)
-}
-
-
-
-
-```
-
-```{r}
-classifications <- pep_classifications %>% names() %>% lapply(function(x){
-    pep_classifications[[x]] %>%
-    fData() %>%
-    filter((mod=="Unmodified") | (mod=="Modified" & filtered_ptm!="" & ptm_position!="")) %>%
-    #filter(svm_filtered_ind_thresh!="unknown") %>%
-    mutate(name=x) %>%
-    select(Master.Protein.Accessions, mod, ptm_position,
-           svm_filtered_ind_thresh, name, Sequence)
-  })
-
-same_localisation <- do.call("rbind", classifications) %>%
-  group_by(Master.Protein.Accessions, mod, ptm_position,
-           svm_filtered_ind_thresh, Sequence) %>%
-  tally() %>% filter(n==3)
-
-same_localisation_unmod <- same_localisation %>% filter(mod=="Unmodified")
-print(length(unique(same_localisation_unmod$Sequence)))
-same_localisation_mod <- same_localisation %>% filter(mod=="Modified") 
-print(length(unique(same_localisation_mod$Sequence)))
-same_localisation_both <- same_localisation %>%
-  filter(Sequence %in% same_localisation_unmod$Sequence,
-         Sequence %in% same_localisation_mod$Sequence)
-print(length(unique(same_localisation_mod$Sequence)))
-```
-```{r}
-pep_classifications$total_1[
-  fData(pep_classifications$total_1)$Sequence %in%
-    same_localisation_both$Sequence]
-  
-p <- plotPTMAlluvial(pep_classifications$total_1[
-  fData(pep_classifications$total_1)$Sequence %in%
-    same_localisation_both$Sequence], remove_unknown=FALSE)
-```
-
-
-```{r, fig.width=10}
-p <- plotPTMAlluvial(pep_classifications$total_1)
-p <- plotPTMAlluvial(pep_classifications$total_2)
-p <- plotPTMAlluvial(pep_classifications$total_3)
-
-p <- plotPTMAlluvial(pep_classifications$total_1, remove_unknown=FALSE)
-p <- plotPTMAlluvial(pep_classifications$total_2, remove_unknown=FALSE)
-p <- plotPTMAlluvial(pep_classifications$total_3, remove_unknown=FALSE)
-
-```
-
-```{r}
-.class_table <- pep_classifications %>% names() %>% lapply(function(x){
-  fData(pep_classifications[[x]]) %>%
-  select(svm_filtered_ind_thresh, svm, mod) %>%
-    mutate(name=x)
-}) %>% do.call(what="rbind") %>%
-  separate(name, into=c("_", "replicate"), sep="_")
-
-.class_table$mod <- factor(
-  .class_table$mod, levels=c("Unmodified", "Modified"))
-
-.class_table$svm_filtered_ind_thresh <- factor(
-  .class_table$svm_filtered_ind_thresh, levels=organelle_order)
-
-.class_table$svm <- factor(
-  .class_table$svm, levels=organelle_order)
-
-.class_tablulate_svm <- .class_table %>%
-  group_by(svm, mod, replicate) %>%
-  tally()
-
-.class_tablulate_svm_filtered <- .class_table %>%
-  group_by(svm_filtered_ind_thresh, mod, replicate) %>%
-  tally()
-
-p <- .class_tablulate_svm_filtered %>%
-  ggplot(aes(mod, n, fill=svm_filtered_ind_thresh)) +
-  geom_bar(stat="identity", position="fill") +
-  my_theme +
-  facet_wrap(~replicate) +
-  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), name="") +
-  theme(text=element_text(size=10),
-        axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
-  xlab("") + ylab("Fraction")
-
-p2 <- p %+% .class_tablulate_svm_filtered[
-  .class_tablulate_svm_filtered$svm_filtered_ind_thresh!="unknown",]
-
-
-p3 <- p %+% .class_tablulate_svm + aes(fill=svm)
-
-p4 <- .class_tablulate_svm_filtered %>%
-  ggplot(aes(mod, n, fill=svm_filtered_ind_thresh)) +
-  geom_bar(stat="identity") +
-  my_theme +
-  facet_wrap(mod~replicate, scales="free") +
-  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), name="") +
-  theme(text=element_text(size=10),
-        axis.text.x=element_blank()) +
-  xlab("") + ylab("Fraction")
-
-p5 <- p4 %+% .class_tablulate_svm_filtered[
-  .class_tablulate_svm_filtered$svm_filtered_ind_thresh!="unknown",]
-
-
-p6 <- p4 %+% .class_tablulate_svm + aes(fill=svm)
-
-print(p)
-print(p2)
-print(p3)
-
-print(p4)
-print(p5)
-print(p6)
-```
-
-
-```{r, fig.width=10, fig.height=10}
-p <- .class_tablulate_svm %>% group_by(replicate, mod) %>%
-  mutate("fraction"=n/sum(n)) %>%
-  ggplot(aes(mod, fraction, fill=svm)) +
-  geom_bar(stat="identity") +
-  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), guide=FALSE) +
-  my_theme +
-  facet_grid(svm~replicate, scales="free") +
-  theme(text=element_text(size=15),
-        axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
-  xlab("") + ylab("Fraction")
-
-p2 <- .class_tablulate_svm_filtered %>% group_by(replicate, mod) %>%
-  mutate("fraction"=n/sum(n)) %>%
-  ggplot(aes(mod, fraction, fill=svm_filtered_ind_thresh)) +
-  geom_bar(stat="identity") +
-  scale_fill_manual(values=getColours(unique(.class_table$svm_filtered_ind_thresh)), guide=FALSE) +
-  my_theme +
-  facet_grid(svm_filtered_ind_thresh~replicate, scales="free") +
-  theme(text=element_text(size=15),
-        axis.text.x=element_text(angle=90, vjust=0.5, hjust=1)) +
-  xlab("") + ylab("Fraction")
-
-print(p)
-print(p2)
-```
-
-
-
-
-
-Save out the combined dataset for Olly
-```{r}
-saveRDS(unmod_pep_succ_pep, '../results/unmod_pep_succ_pep_comb.rds')
-```
 

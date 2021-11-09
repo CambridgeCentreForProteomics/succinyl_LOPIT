@@ -86,12 +86,12 @@ Ok, so much higher intensity for unmodified LOPIT, as expected. Approximately 2^
 
 Parse the PTM scores, add filtered_* columns to detail filtering.
 ```{r}
-raw_psm$succ <- parse_PTM_scores(raw_psm$succ, ptm_col="ptmRS.Succinyl.Site.Probabilities", threshold=75)
+raw_psm$succ <- parse_PTM_scores(raw_psm$succ, ptm_col="ptmRS.Best.Site.Probabilities", threshold=75)
 
 raw_psm$succ <- raw_psm$succ %>% filter(filtered_score!="") # The filtering doesn't actually take place until this step 
 raw_psm %>% lapply(dim)
 ```
-Add the position of the succinylation and the sequence around the site (useful for integrating with external databases)
+Add the position of the succinylation 
 ```{r}
 raw_psm$succ <- raw_psm$succ %>% add_PTM_positions(protein_fasta_inf)
 
@@ -243,14 +243,27 @@ Now, let's center median normalise the PSM level quantification. Note that we do
 
 
 ```{r}
-psm_res_imp <- psm_res_imp %>% lapply(function(x){
-  cm <- log(x, base=2) %>% MSnbase::normalise( method='diff.median')
+
+medians <- psm_res_imp$unmod %>%
+  #log(base=2) %>%
+  get_medians()
+
+psm_res_imp_cm <- psm_res_imp %>% lapply(function(x){
+  cm <- x %>%
+    #log(base=2) %>%
+    camprotR::center_normalise_to_ref(medians)
+  #exprs(cm) <- 2^(exprs(cm))
+  return(cm)
+})
+
+psm_res_imp_cm <- psm_res_imp %>% lapply(function(x){
+  cm <- x %>% log(base=2) %>% MSnbase::normalise(method='diff.median')
   exprs(cm) <- 2^(exprs(cm))
   return(cm)
 })
 
-psm_res_imp %>% names() %>% lapply(function(x){
-  p <- camprotR::plot_quant(log(psm_res_imp[[x]], base=2)) +
+psm_res_imp_cm %>% names() %>% lapply(function(x){
+  p <- camprotR::plot_quant(log(psm_res_imp_cm[[x]], base=2)) +
     ggtitle(x)
 })
 ```
@@ -258,25 +271,25 @@ psm_res_imp %>% names() %>% lapply(function(x){
 Combine PSMs to PTM phopeptides. Note that we are summarising PTM peptides using combination of Sequence and PTM position(s)
 ```{r}
 
-ptm_pep_group <- paste(fData(psm_res_imp$succ)$Sequence, fData(psm_res_imp$succ)$ptm_position, sep=': ')
+ptm_pep_group <- paste(fData(psm_res_imp_cm$succ)$Sequence, fData(psm_res_imp_cm$succ)$ptm_position, sep=': ')
 print(length(ptm_pep_group))
 print(length(unique(ptm_pep_group)))
 
-succ_pep <- MSnbase::combineFeatures(psm_res_imp$succ, groupBy=ptm_pep_group, method='sum')
+succ_pep <- MSnbase::combineFeatures(psm_res_imp_cm$succ, groupBy=ptm_pep_group, method='sum')
 succ_pep
 ```
 ```{r}
-pep_group <- fData(psm_res_imp$unmod)$Sequence
+pep_group <- fData(psm_res_imp_cm$unmod)$Sequence
 print(length(pep_group))
 print(length(unique(pep_group)))
 
-unmod_pep <- MSnbase::combineFeatures(psm_res_imp$unmod, groupBy=pep_group, method='sum')
+unmod_pep <- MSnbase::combineFeatures(psm_res_imp_cm$unmod, groupBy=pep_group, method='sum')
 
-prot_group <- fData(psm_res_imp$unmod)$Master.Protein.Accessions
+prot_group <- fData(psm_res_imp_cm$unmod)$Master.Protein.Accessions
 print(length(prot_group))
 print(length(unique(prot_group)))
 
-unmod_prot <- MSnbase::combineFeatures(psm_res_imp$unmod, groupBy=prot_group, method='sum')
+unmod_prot <- MSnbase::combineFeatures(psm_res_imp_cm$unmod, groupBy=prot_group, method='sum')
 ```
 
 Before we save out the MsnSets, we need to add the markers.
