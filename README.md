@@ -7,7 +7,8 @@ Repository structure:
 - *notebooks*: Analyses in R markdown notebooks, with order indicated by prefix     
 - *results*: Intermediate and final outputs from notebooks and plots
 - *figures*: Figure panels for manuscript
-- 
+
+
 ###### Dependencies for notebooks:
 - R >= 4.0.3
 - tidyverse (CRAN)
