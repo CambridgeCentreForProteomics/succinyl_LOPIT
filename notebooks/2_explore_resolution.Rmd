@@ -161,7 +161,8 @@ plotModPepOntoUnmodProt <- function(unmod, mod, dims=c(1,2), pch=20, size=1, alp
 projected_onto_protein <- plotModPepOntoUnmodProt(all_data$Protein, all_data$`Peptide (succinylated)`, size=0.5)
 
 projected_onto_peptide <- plotModPepOntoUnmodProt(all_data$`Peptide (unmodified)`, all_data$`Peptide (succinylated)`, size=0.5)
-
+ggsave('../figures/peptide_pca.png', projected_onto_peptide$inc_mod)
+ggsave('../figures/peptide_pca.pdf', projected_onto_peptide$inc_mod)
 
 
 ```

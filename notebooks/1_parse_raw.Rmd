@@ -244,18 +244,6 @@ Now, let's center median normalise the PSM level quantification. Note that we do
 
 ```{r}
 
-medians <- psm_res_imp$unmod %>%
-  #log(base=2) %>%
-  get_medians()
-
-psm_res_imp_cm <- psm_res_imp %>% lapply(function(x){
-  cm <- x %>%
-    #log(base=2) %>%
-    camprotR::center_normalise_to_ref(medians)
-  #exprs(cm) <- 2^(exprs(cm))
-  return(cm)
-})
-
 psm_res_imp_cm <- psm_res_imp %>% lapply(function(x){
   cm <- x %>% log(base=2) %>% MSnbase::normalise(method='diff.median')
   exprs(cm) <- 2^(exprs(cm))

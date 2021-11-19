@@ -33,16 +33,35 @@ pep_classifications %>%
   fData() %>%
   filter(filtered_ptm %in% c('Succinyl', NA), svm_filtered_ind_thresh!='unknown') %>%
   group_by(filtered_ptm, svm_filtered_ind_thresh) %>%
+  tally()
+
+pep_classifications %>%
+  fData() %>%
+  filter(filtered_ptm %in% c('Succinyl', NA), svm_filtered_ind_thresh!='unknown') %>%
+  dplyr::select(filtered_ptm, Master.Protein.Accessions, svm_filtered_ind_thresh) %>%
+  unique() %>%
+  group_by(filtered_ptm, svm_filtered_ind_thresh) %>%
+  tally()
+  
+p <- pep_classifications %>%
+  fData() %>%
+  filter(filtered_ptm %in% c('Succinyl', NA), svm_filtered_ind_thresh!='unknown') %>%
+  group_by(filtered_ptm, svm_filtered_ind_thresh) %>%
   tally() %>%
   mutate(filtered_ptm=ifelse(is.na(filtered_ptm), 'Unmodified', filtered_ptm)) %>%
   ggplot(aes(svm_filtered_ind_thresh, n)) +
   geom_bar(stat='identity') +
   facet_wrap(~filtered_ptm, scales='free') +
-  theme_camprot(base_size=15) +
+  theme_camprot(base_size=15, base_family='sans') +
   theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1),
         strip.background=element_blank()) +
   xlab('Localisation assignment') +
   ylab('Peptides')
+
+print(p)
+ggsave('../figures/classification_counts.png')
+ggsave('../figures/classification_counts.pdf')
+
 ```
 
 
@@ -130,13 +149,15 @@ p <- nuc_suc_tally_by_abundance %>%
   geom_point() +
   geom_text(aes(label=suc, hjust=1, y=fraction+2)) +
   geom_line(group=1) +
-  theme_camprot(border=FALSE, base_size=15) +
-  theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1)) +
-  xlab('Protein abundace (Geiger et al; iBAQ)') +
+  theme_camprot(border=FALSE, base_size=15, base_family='sans') +
+  scale_x_discrete(labels=1:10) +
+  theme(axis.text.x=element_blank()) +
+  xlab('\nProtein abundace decile') +
   ylab('Succinylated (%)')
 
 print(p)
-
+ggsave('../figures/nuclear_succ_proteins_abundance.png')
+ggsave('../figures/nuclear_succ_proteins_abundance.pdf')
 ```
 
 
