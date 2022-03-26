@@ -19,16 +19,16 @@ fontsize: 11pt
 library(tidyverse)
 library(camprotR)
 library(MSnbase)
-
+library(here)
 ```
 
 ```{r}
-infile_total_psm <- "../raw/Unmod_PSMs.txt"
-infile_succ_psm = "../raw/Suc_PSMs.txt"
+infile_total_psm <- here("raw/Unmod_PSMs.txt")
+infile_succ_psm = here("raw/Suc_PSMs.txt")
 
-protein_fasta_inf <- "../shared_files/Uniprot_Human_Anja_April2019.fasta"
+protein_fasta_inf <- here("shared_files/Uniprot_Human_Anja_April2019.fasta")
 
-cfasta <- '../shared_files/cRAP_FullIdentifiers.fasta'
+cfasta <- here('shared_files/cRAP_FullIdentifiers.fasta')
 ```
 
 
@@ -48,6 +48,7 @@ crap.accessions <- bs.fasta %>%
 
 
 
+Parse the PSM level data
 ```{r}
 raw_psm <- NULL
 raw_psm$unmod  <- parse_features(read.delim(infile_total_psm),
@@ -61,36 +62,25 @@ raw_psm$succ <- parse_features(read.delim(infile_succ_psm),
 raw_psm %>% lapply(dim)
 ```
 
-Checking intensity for peptides in Total and phospho-enriched
-```{r, fig.height=6, fig.width=6}
-keep_cols <- c('Intensity', 'Modifications', 'Spectrum.File')
-intensities <- raw_psm %>% lapply(function(x) x[,keep_cols]) %>% bind_rows() %>%
-  mutate(succ=ifelse(grepl('Succ', Modifications),
-                             'Succinylated', 'Not succinylated')) %>%
-  mutate(type=ifelse(grepl('total', Spectrum.File), 'Total', 'Succinyl-enriched'))
-
-intensities %>% group_by(succ, type) %>%
-  summarise(median_intensity=median(log2(Intensity), na.rm=TRUE))
-
-intensities %>%
-  ggplot(aes(log2(Intensity), colour=succ, linetype=type)) +
-  geom_density() +
-  theme_bw() +
-  scale_colour_manual(name='', values=get_cat_palette(2)) +
-  theme_camprot(base_size=15) +
-  theme(legend.position='top', legend.direction='vertical') +
-  scale_linetype_manual(name='Replicate', values=c('solid', 'dotted', 'dashed'))
-
-```
-Ok, so much higher intensity for unmodified LOPIT, as expected. Approximately 2^4 = 16-fold higher.
 
 Parse the PTM scores, add filtered_* columns to detail filtering.
 ```{r}
-raw_psm$succ <- parse_PTM_scores(raw_psm$succ, ptm_col="ptmRS.Best.Site.Probabilities", threshold=75)
+
+# We need to remove some of the modifications from the ptmRS best site probability column
+raw_psm$succ$ptmRS.Best.Site.Probabilities_updated <- raw_psm$succ$ptmRS.Best.Site.Probabilities %>%
+  strsplit(split = '; ') %>%
+  sapply(function(mod_details){
+    keep <- !grepl('TMT|Deamidated|Oxidation', mod_details)
+    paste(mod_details[keep], collapse='; ')
+    })
+
+raw_psm$succ <- parse_PTM_scores(raw_psm$succ, ptm_col="ptmRS.Best.Site.Probabilities_updated", threshold=75)
 
 raw_psm$succ <- raw_psm$succ %>% filter(filtered_score!="") # The filtering doesn't actually take place until this step 
 raw_psm %>% lapply(dim)
 ```
+
+
 Add the position of the succinylation 
 ```{r}
 raw_psm$succ <- raw_psm$succ %>% add_PTM_positions(protein_fasta_inf)
@@ -108,22 +98,27 @@ raw_psm %>% lapply(dim)
 Convert to MSnSets
 ```{r}
 
-sample_infile = "../raw/samples.tsv"
+sample_infile = here("raw/samples.tsv")
 sample_info <- read.delim(sample_infile) %>% tibble::column_to_rownames('Tag')
+sample_info <- sample_info %>% filter(Sample_name!='Total cell lysate')
+rownames(sample_info)[10] <- '131'
 
 makeMsnset <- function(obj, sinfo){
   
   abundance_cols <- colnames(obj)[grepl('Abundance.', colnames(obj))]
+
   psm_e <- as.matrix(obj[,abundance_cols])
   psm_f <- obj[,setdiff(colnames(obj), abundance_cols)]
     
   # update the column names to remove the 'Abundance.` prefix
   colnames(psm_e) <- gsub('Abundance.', '', colnames(psm_e))
+  print(colnames(psm_e))
+  print(rownames(sinfo))
   psm_e <- psm_e[,rownames(sinfo)]
 
   res <- MSnbase::MSnSet(exprs=psm_e, fData=psm_f, pData=sinfo)
   
-  res <- res[,pData(res)$Sample_name!='Total cell lysate']
+  #res <- res[,pData(res)$Sample_name!='Total cell lysate']
   
   return(res)
 }
@@ -255,6 +250,10 @@ psm_res_imp_cm %>% names() %>% lapply(function(x){
     ggtitle(x)
 })
 ```
+```{r}
+head(fData(psm_res_imp_cm$succ)$filtered_ptm)
+succ_pep
+```
 
 Combine PSMs to PTM phopeptides. Note that we are summarising PTM peptides using combination of Sequence and PTM position(s)
 ```{r}
@@ -267,6 +266,7 @@ succ_pep <- MSnbase::combineFeatures(psm_res_imp_cm$succ, groupBy=ptm_pep_group,
 succ_pep
 ```
 ```{r}
+fData(psm_res_imp_cm$unmod)$Sequence <- toupper(fData(psm_res_imp_cm$unmod)$Annotated.Sequence)
 pep_group <- fData(psm_res_imp_cm$unmod)$Sequence
 print(length(pep_group))
 print(length(unique(pep_group)))
@@ -282,7 +282,7 @@ unmod_prot <- MSnbase::combineFeatures(psm_res_imp_cm$unmod, groupBy=prot_group,
 
 Before we save out the MsnSets, we need to add the markers.
 ```{r}
-markers_df <- read.delim("../shared_files/markers_9B_hyperLOPIT_vs_DC.csv", sep=",", header=FALSE, stringsAsFactors=FALSE)[,1:2]
+markers_df <- read.delim(here("shared_files/markers_9B_hyperLOPIT_vs_DC.csv"), sep=",", header=FALSE, stringsAsFactors=FALSE)[,1:2]
 
 markers_df$V2 <- Hmisc::capitalize(tolower(markers_df$V2))
 markers_df$V2 <- recode(markers_df$V2,
@@ -345,9 +345,9 @@ succ_pep <- normalise(succ_pep, method='sum')
 
 Now, we save out the final MsnSet object for use in later notebooks.
 ```{r}
-saveRDS(unmod_prot, "../results/unmod_prot.rds")
-saveRDS(unmod_pep, "../results/unmod_pep.rds")
-saveRDS(succ_pep, "../results/succ_pep.rds")
+saveRDS(unmod_prot, here("results/unmod_prot.rds"))
+saveRDS(unmod_pep, here("results/unmod_pep.rds"))
+saveRDS(succ_pep, here("results/succ_pep.rds"))
 
 
 

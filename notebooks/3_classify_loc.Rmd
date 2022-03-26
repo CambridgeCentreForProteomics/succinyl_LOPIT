@@ -28,18 +28,16 @@ marker_colours <- getStockcol()[c(1:5, 7:11)]
 ```
 
 ```{r}
-unmod_prot <- readRDS("../results/unmod_prot.rds")
-unmod_pep <- readRDS("../results/unmod_pep.rds")
-succ_pep <- readRDS("../results/succ_pep.rds")
+unmod_prot <- readRDS(here("results/unmod_prot.rds"))
+unmod_pep <- readRDS(here("results/unmod_pep.rds"))
+succ_pep <- readRDS(here("results/succ_pep.rds"))
 
 ```
 
 
 
 
-SVM parameter optimisation. Not run by default to avoid excessive run-time.
-
-
+SVM parameter optimisation. Not re-run by default to avoid excessive run-time.
 ```{r}
 times <- NULL
 times$prot <- 50
@@ -68,7 +66,7 @@ params_unmod_prot <- pRoloc::svmOptimisation(
 
 
 
-saveRDS(params_unmod_prot, "../results/svm_params_unmod_prot.Rds")
+saveRDS(params_unmod_prot, here("results/svm_params_unmod_prot.Rds"))
 
 plot(params_unmod_prot)
 levelPlot(params_unmod_prot)
@@ -90,7 +88,7 @@ params_unmod_pep <- pRoloc::svmOptimisation(
   cost=cost,
   sigma=sigma)
 
-saveRDS(params_unmod_pep, "../results/svm_params_unmod_pep.Rds")
+saveRDS(params_unmod_pep, here("results/svm_params_unmod_pep.Rds"))
 ```
 
 
@@ -269,7 +267,7 @@ pep_classifications <- svmClassification(
 pep_classifications <- pep_classifications %>% addFilteredSVM()
 
 
-saveRDS(pep_classifications, '../results/pep_classifications.rds')
+saveRDS(pep_classifications, here("results/pep_classifications.rds"))
 ```
 
 

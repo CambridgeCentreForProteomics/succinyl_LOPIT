@@ -27,9 +27,9 @@ marker_colours <- getStockcol()[c(1:5, 7:11)]
 ```
 
 ```{r}
-unmod_prot <- readRDS("../results/unmod_prot.rds")
-unmod_pep <- readRDS("../results/unmod_pep.rds")
-succ_pep <- readRDS("../results/succ_pep.rds")
+unmod_prot <- readRDS(here("results/unmod_prot.rds"))
+unmod_pep <- readRDS(here("results/unmod_pep.rds"))
+succ_pep <- readRDS(here("results/succ_pep.rds"))
 
 all_data <- list('Protein'=unmod_prot, 'Peptide (unmodified)'=unmod_pep, 'Peptide (succinylated)'=succ_pep)
 ```
@@ -161,8 +161,8 @@ plotModPepOntoUnmodProt <- function(unmod, mod, dims=c(1,2), pch=20, size=1, alp
 projected_onto_protein <- plotModPepOntoUnmodProt(all_data$Protein, all_data$`Peptide (succinylated)`, size=0.5)
 
 projected_onto_peptide <- plotModPepOntoUnmodProt(all_data$`Peptide (unmodified)`, all_data$`Peptide (succinylated)`, size=0.5)
-ggsave('../figures/peptide_pca.png', projected_onto_peptide$inc_mod)
-ggsave('../figures/peptide_pca.pdf', projected_onto_peptide$inc_mod)
+ggsave(here("figures/peptide_pca.png"), projected_onto_peptide$inc_mod)
+ggsave(here("figures/peptide_pca.pdf"), projected_onto_peptide$inc_mod)
 
 
 ```
